@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>REIKAI-FUIN: Soft Edge Edition</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; background: #050005; display: flex; justify-content: center; align-items: center; overflow: hidden; font-family: 'serif'; }
+        #bg-effect {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: radial-gradient(circle at 50% 50%, #200020 0%, #000 80%);
+            z-index: -1;
+        }
+        canvas { 
+            width: 100vw; height: 56.25vw; 
+            max-width: 177.78vh; max-height: 100vh; 
+            background: rgba(15, 0, 15, 0.85);
+            border: 2px solid #502;
+            border-radius: 20px; /* キャンバス自体の角も丸く */
+            box-shadow: 0 0 50px rgba(255, 0, 0, 0.1); 
+        }
+    </style>
+</head>
+<body>
+<div id="bg-effect"></div>
+<script>
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    const V_WIDTH = 1066;
+    const V_HEIGHT = 600;
+    canvas.width = V_WIDTH;
+    canvas.height = V_HEIGHT;
+    document.body.appendChild(canvas);
+
+    const state = { 
+        scene: 'title', gravity: 0.16, hitStopTimer: 0, stage: 1, maxStage: 3,
+        life: 4, score: 0, combo: 0, comboTimer: 0,
+        highScore: localStorage.getItem('reikai_fuin_hs') || 0
+    };
+
+    const player = { x: V_WIDTH / 2 - 50, y: 540, w: 100, h: 20, baseSpeed: 11, speed: 11, isAttacking: false, isSliding: false, attackTimer: 0 };
+    const ball = { x: V_WIDTH / 2, y: 200, vx: 6, vy: 4, radius: 12 };
+    const boss = { x: V_WIDTH / 2 - 110, y: 80, w: 220, h: 70, hp: 80, maxHp: 80, vx: 4, active: false };
+    
+    let blocks = [], particles = [], bullets = [];
+
+    // 角丸長方形を描画する共通関数
+    function fillRoundedRect(x, y, w, h, r, fillStyle, strokeStyle = null) {
+        ctx.beginPath();
+        ctx.roundRect(x, y, w, h, r);
+        ctx.fillStyle = fillStyle;
+        ctx.fill();
+        if (strokeStyle) {
+            ctx.strokeStyle = strokeStyle;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+    }
+
+    function initStage(stageNum) {
+        blocks = []; particles = []; bullets = [];
+        state.stage = stageNum; state.scene = 'playing'; state.combo = 0;
+        boss.active = (stageNum === 3); boss.hp = boss.maxHp;
+        ball.x = V_WIDTH / 2; ball.y = 200; ball.vx = 6; ball.vy = 5;
+        const bW = 80, bH = 25, gap = 15;
+        const getCol = () => Math.random() > 0.5 ? '#600' : '#404';
+        if (stageNum === 1) {
+            for(let i=0; i<5; i++) for(let j=i; j<10-i; j++) blocks.push({ x: 140 + j * (bW + gap), y: i * (bH + gap) + 80, w: bW, h: bH, active: true, color: getCol() });
+        } else if (stageNum === 2) {
+            for(let i=0; i<8; i++) {
+                blocks.push({ x: 200 + i * (bW + gap), y: i * (bH + gap) + 60, w: bW, h: bH, active: true, color: '#500' });
+                blocks.push({ x: 200 + (7-i) * (bW + gap), y: i * (bH + gap) + 60, w: bW, h: bH, active: true, color: '#304' });
+            }
+        } else if (stageNum === 3) {
+            for(let j=0; j<8; j++) {
+                blocks.push({ x: 150 + j * (bW + 25), y: 220, w: bW, h: bH, active: true, color: '#404' });
+                blocks.push({ x: 150 + j * (bW + 25), y: 260, w: bW, h: bH, active: true, color: '#400' });
+            }
+        }
+    }
+
+    const keys = {};
+    window.addEventListener('keydown', e => {
+        keys[e.code] = true;
+        if (state.scene === 'title' && e.code === 'KeyZ') { state.score = 0; state.life = 4; initStage(1); }
+        else if ((state.scene === 'clear' || state.scene === 'gameover' || state.scene === 'allclear') && e.code === 'KeyR') {
+            if (state.scene === 'gameover' || state.scene === 'allclear') state.scene = 'title';
+            else initStage(state.stage + 1);
+        }
+    });
+    window.addEventListener('keyup', e => keys[e.code] = false);
+
+    function update() {
+        if (state.scene !== 'playing') { draw(); requestAnimationFrame(update); return; }
+        if (state.hitStopTimer > 0) { state.hitStopTimer--; requestAnimationFrame(update); return; }
+
+        player.isSliding = (keys['ShiftLeft'] || keys['ShiftRight']);
+        player.speed = player.isSliding ? player.baseSpeed * 2.2 : player.baseSpeed;
+        player.h = player.isSliding ? 10 : 20; player.y = player.isSliding ? 550 : 540;
+        if (keys['ArrowLeft'] && player.x > 0) player.x -= player.speed;
+        if (keys['ArrowRight'] && player.x < V_WIDTH - player.w) player.x += player.speed;
+        if (keys['KeyZ'] && !player.isAttacking) { player.isAttacking = true; player.attackTimer = 15; }
+        player.attackTimer = Math.max(0, player.attackTimer - 1);
+        if (player.attackTimer === 0) player.isAttacking = false;
+        if (keys['KeyX'] && bullets.length < 6) { bullets.push({ x: player.x + player.w/2, y: player.y, vy: -15 }); keys['KeyX'] = false; }
+
+        ball.vy += state.gravity; ball.x += ball.vx; ball.y += ball.vy;
+        if (ball.x < 15 || ball.x > V_WIDTH-15) { ball.vx *= -1; ball.x = ball.x<15?15:V_WIDTH-15; }
+        if (ball.y < 15) { ball.vy *= -1; ball.y = 15; }
+        if (ball.y > V_HEIGHT-15) { ball.vy *= -0.9; ball.y = V_HEIGHT-15; }
+
+        if (ball.y + ball.radius > player.y && ball.y - ball.radius < player.y + player.h && ball.x + ball.radius > player.x && ball.x - ball.radius < player.x + player.w) {
+            if (player.isAttacking) {
+                ball.vy = -18; ball.vx = (ball.x - (player.x + player.w/2)) * 0.5;
+                state.hitStopTimer = 6; state.score += 50;
+            } else {
+                state.life--; state.combo = 0; state.hitStopTimer = 25;
+                ball.vy = -10; ball.y = player.y - 35;
+                if (state.life <= 0) { state.scene = 'gameover'; if(state.score > state.highScore) { state.highScore = state.score; localStorage.setItem('reikai_fuin_hs', state.score); } }
+            }
+        }
+
+        blocks.forEach(b => {
+            if (!b.active) return;
+            if (ball.x > b.x && ball.x < b.x + b.w && ball.y > b.y && ball.y < b.y + b.h) {
+                b.active = false; ball.vy *= -1; state.score += 100; state.combo++; state.comboTimer = 45;
+                if (blocks.every(bl => !bl.active) && !boss.active) {
+                    state.score += state.life * 1000 + (state.stage === state.maxStage ? 10000 : 0);
+                    state.scene = (state.stage === state.maxStage) ? 'allclear' : 'clear';
+                    if (state.score > state.highScore) { state.highScore = state.score; localStorage.setItem('reikai_fuin_hs', state.score); }
+                }
+            }
+        });
+
+        bullets.forEach((b, i) => {
+            b.y += b.vy; if (b.y < 0) bullets.splice(i, 1);
+            if (boss.active && b.x > boss.x && b.x < boss.x + boss.w && b.y > boss.y && b.y < boss.y + boss.h) {
+                boss.hp--; bullets.splice(i, 1);
+                if (boss.hp <= 0) { boss.active = false; state.score += state.life * 1000 + 10000; state.scene = 'allclear'; }
+            }
+        });
+
+        if (boss.active) {
+            boss.x += boss.vx; if (boss.x < 50 || boss.x > V_WIDTH - boss.w - 50) boss.vx *= -1;
+        }
+        draw();
+        requestAnimationFrame(update);
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, V_WIDTH, V_HEIGHT);
+
+        if (state.scene === 'title') {
+            ctx.fillStyle = '#f22'; ctx.textAlign = 'center'; ctx.font = 'bold 80px serif'; ctx.fillText('霊 塊 封 印', V_WIDTH/2, V_HEIGHT/2 - 40);
+            ctx.fillStyle = '#ffd700'; ctx.font = '24px serif'; ctx.fillText(`最高記録: ${Number(state.highScore).toLocaleString()}`, V_WIDTH/2, V_HEIGHT/2 + 100);
+            ctx.fillStyle = (Math.floor(Date.now()/500) % 2) ? '#fff' : '#555'; ctx.fillText('Press [Z] Key', V_WIDTH/2, V_HEIGHT/2 + 180);
+            return;
+        }
+
+        ctx.fillStyle = '#f44'; ctx.font = 'bold 24px serif'; ctx.textAlign = 'left'; ctx.fillText(`得点: ${state.score.toLocaleString()}`, 30, 45);
+        ctx.textAlign = 'right'; ctx.fillText(`生命: ${'♦'.repeat(Math.max(0, state.life))}`, V_WIDTH-30, 45);
+
+        // 連鎖表示 (ここも微調整)
+        if (state.combo > 1 && state.comboTimer > 0) {
+            state.comboTimer--;
+            ctx.fillStyle = `hsl(${Math.max(0, 60-state.combo*5)}, 100%, 70%)`;
+            ctx.textAlign = 'center'; ctx.font = 'italic bold 30px serif';
+            ctx.fillText(`${state.combo} 連鎖`, V_WIDTH / 2, V_HEIGHT / 2 + 130);
+        }
+
+        // ブロック (角丸6px)
+        blocks.forEach(b => { if(b.active) fillRoundedRect(b.x, b.y, b.w, b.h, 6, b.color, '#200'); });
+        
+        // お札ショット (角丸2px)
+        bullets.forEach(b => { fillRoundedRect(b.x-5, b.y, 10, 20, 2, '#fff', '#f00'); });
+
+        if (boss.active) {
+            // HPゲージ (角丸4px)
+            fillRoundedRect(V_WIDTH/2-200, 20, 400, 8, 4, '#200');
+            fillRoundedRect(V_WIDTH/2-200, 20, (boss.hp/boss.maxHp)*400, 8, 4, '#f00');
+            // ボス本体 (角丸12px)
+            fillRoundedRect(boss.x, boss.y, boss.w, boss.h, 12, '#404', '#f00');
+        }
+
+        // プレイヤー (角丸10px = ほぼカプセル型)
+        let pColor = player.isAttacking ? '#f00' : (player.isSliding ? '#fff' : '#999');
+        fillRoundedRect(player.x, player.y, player.w, player.h, 10, pColor, '#400');
+
+        // ボール
+        ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.radius, 0, Math.PI*2); ctx.fillStyle = '#fff'; ctx.fill();
+
+        // オーバーレイ
+        if (state.scene !== 'playing') {
+            ctx.fillStyle = 'rgba(10,0,0,0.92)'; ctx.fillRect(0,0,V_WIDTH,V_HEIGHT);
+            ctx.fillStyle = '#fff'; ctx.textAlign = 'center'; 
+            if (state.scene === 'gameover') {
+                ctx.font = 'bold 70px serif'; ctx.fillStyle = '#f00'; ctx.fillText('封 印 失 敗', V_WIDTH/2, V_HEIGHT/2);
+                ctx.fillStyle = '#fff'; ctx.font = '24px serif'; ctx.fillText('Press [R] Key', V_WIDTH/2, V_HEIGHT/2+80);
+            } else if (state.scene === 'allclear') {
+                ctx.font = 'bold 70px serif'; ctx.fillStyle = '#ffd700'; ctx.fillText('全 霊 封 印', V_WIDTH/2, V_HEIGHT/2 - 50);
+                ctx.font = 'bold 50px serif'; ctx.fillStyle = '#f44'; ctx.fillText(`最終得点: ${state.score.toLocaleString()}`, V_WIDTH/2, V_HEIGHT/2 + 50);
+                ctx.font = '24px serif'; ctx.fillStyle = '#fff'; ctx.fillText('Press [R] Key', V_WIDTH/2, V_HEIGHT/2+150);
+            } else if (state.scene === 'clear') {
+                ctx.font = 'bold 70px serif'; ctx.fillText(`封 印 成 功`, V_WIDTH/2, V_HEIGHT/2 - 40);
+                ctx.font = '24px serif'; ctx.fillText('Press [R] to Next', V_WIDTH/2, V_HEIGHT/2+100);
+            }
+        }
+    }
+    update();
+</script>
+</body>
+</html>
